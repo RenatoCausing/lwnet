@@ -42,6 +42,58 @@ _pil_interpolation_to_str = {
     T.InterpolationMode.BOX: 'PIL.Image.BOX',
 }
 
+_pil_int_to_mode = {
+    Image.NEAREST: T.InterpolationMode.NEAREST,
+    Image.BILINEAR: T.InterpolationMode.BILINEAR,
+    Image.BICUBIC: T.InterpolationMode.BICUBIC,
+    Image.LANCZOS: T.InterpolationMode.LANCZOS,
+    Image.HAMMING: T.InterpolationMode.HAMMING,
+    Image.BOX: T.InterpolationMode.BOX,
+}
+
+
+def _normalize_interpolation(value, default):
+    """Convert legacy Pillow constants/bools to torchvision InterpolationMode."""
+    if value is None:
+        return default
+    if isinstance(value, T.InterpolationMode):
+        return value
+    if isinstance(value, bool):
+        # Historical code used False for nearest, True for bilinear.
+        return T.InterpolationMode.BILINEAR if value else T.InterpolationMode.NEAREST
+    if isinstance(value, int):
+        return _pil_int_to_mode.get(value, default)
+    return default
+
+
+def _match_fill_channels(fill, img):
+    """Ensure fill value matches the number of channels in img."""
+    if fill is None:
+        return None
+    if isinstance(fill, numbers.Number):
+        return fill
+    if not isinstance(fill, (tuple, list)):
+        return fill
+
+    if hasattr(img, 'getbands'):
+        num_channels = len(img.getbands())
+    else:
+        arr = np.asarray(img)
+        num_channels = arr.shape[2] if arr.ndim == 3 else 1
+
+    fill_tuple = tuple(fill)
+    if len(fill_tuple) == num_channels:
+        return fill_tuple
+    if num_channels == 1:
+        return fill_tuple[0]
+    if len(fill_tuple) == 1:
+        return tuple(fill_tuple * num_channels)
+    # Fallback: repeat/trim to match channels
+    if len(fill_tuple) < num_channels:
+        extension = (fill_tuple[-1],) * (num_channels - len(fill_tuple))
+        return fill_tuple + extension
+    return fill_tuple[:num_channels]
+
 def _get_image_size(img):
     if F._is_pil_image(img):
         return img.size
@@ -1079,7 +1131,7 @@ class RandomRotation(object):
     """
 
     def __init__(self, degrees, resample=False, resample_tg=False, interpolation=T.InterpolationMode.BILINEAR,
-                 interpolation_tg = T.InterpolationMode.NEAREST, expand=False, center=None, fill=0, fill_tg=(0,)): #
+                 interpolation_tg = T.InterpolationMode.NEAREST, expand=False, center=None, fill=0, fill_tg=(0,)):
         if isinstance(degrees, numbers.Number):
             if degrees < 0:
                 raise ValueError("If degrees is a single number, it must be positive.")
@@ -1089,15 +1141,17 @@ class RandomRotation(object):
                 raise ValueError("If degrees is a sequence, it must be of len 2.")
             self.degrees = degrees
 
-        self.resample = resample
-        self.resample_tg = resample_tg
+        default_interp = T.InterpolationMode.BILINEAR
+        default_mask_interp = T.InterpolationMode.NEAREST
+        # Support legacy resample/bool args by normalizing everything to InterpolationMode
+        primary_interp = interpolation if interpolation is not None else resample
+        primary_mask_interp = interpolation_tg if interpolation_tg is not None else resample_tg
+        self.interpolation = _normalize_interpolation(primary_interp, default_interp)
+        self.interpolation_tg = _normalize_interpolation(primary_mask_interp, default_mask_interp)
         self.expand = expand
         self.center = center
         self.fill = fill
         self.fill_tg = fill_tg
-
-        self.interpolation = interpolation
-        self.interpolation_tg = interpolation_tg
 
     @staticmethod
     def get_params(degrees):
@@ -1121,24 +1175,23 @@ class RandomRotation(object):
 
         angle = self.get_params(self.degrees)
 
-        if TORCHVISION_VERSION <= distutils.version.LooseVersion("0.4.2"):
-            # the "fill" argument was only introduced in torchvision==0.5.0
-            if target is not None:
-                return F.rotate(img, angle, self.resample, self.expand, self.center), \
-                       F.rotate(target, angle, self.resample_tg, self.expand, self.center) #
-                       # resample = False is by default nearest, appropriate for targets
-            return F.rotate(img, angle, self.resample, self.expand, self.center)
+        img_fill = _match_fill_channels(self.fill, img)
+        tgt_fill = _match_fill_channels(self.fill_tg, target) if target is not None else None
 
-        else:
-            if target is not None:
-                return F.rotate(img, angle, self.interpolation, self.expand, self.center, self.fill, resample=None), \
-                       F.rotate(target, angle, self.interpolation_tg, self.expand, self.center, self.fill_tg, resample=None) #
-                       # resample = False is by default nearest, appropriate for targets
-            return F.rotate(img, angle, self.interpolation, self.expand, self.center, self.fill_tg, resample=None)
+        if target is not None:
+            return (
+                F.rotate(img, angle, interpolation=self.interpolation, expand=self.expand,
+                         center=self.center, fill=img_fill),
+                F.rotate(target, angle, interpolation=self.interpolation_tg, expand=self.expand,
+                         center=self.center, fill=tgt_fill),
+            )
+        return F.rotate(img, angle, interpolation=self.interpolation, expand=self.expand,
+                         center=self.center, fill=img_fill)
 
     def __repr__(self):
+        interp_str = _pil_interpolation_to_str.get(self.interpolation, str(self.interpolation))
         format_string = self.__class__.__name__ + '(degrees={0}'.format(self.degrees)
-        format_string += ', resample={0}'.format(self.resample)
+        format_string += ', interpolation={0}'.format(interp_str)
         format_string += ', expand={0}'.format(self.expand)
         if self.center is not None:
             format_string += ', center={0}'.format(self.center)
@@ -1219,8 +1272,10 @@ class RandomAffine(object):
         else:
             self.shear = shear
 
-        self.resample = resample
-        self.resample_tg = resample_tg
+        default_interp = T.InterpolationMode.BILINEAR
+        default_mask_interp = T.InterpolationMode.NEAREST
+        self.resample = _normalize_interpolation(resample, default_interp)
+        self.resample_tg = _normalize_interpolation(resample_tg, default_mask_interp)
         # self.fillcolor = fillcolor
         self.fill = fill
 
@@ -1265,11 +1320,13 @@ class RandomAffine(object):
             PIL Image: Rotated image(s).
         """
         ret = self.get_params(self.degrees, self.translate, self.scale, self.shear, img.size)
+        img_fill = _match_fill_channels(self.fill, img)
+        tgt_fill = _match_fill_channels(self.fill, target) if target is not None else None
         if target is not None:
-            return F.affine(img, *ret, resample=self.resample, fill=self.fill), \
-                   F.affine(target, *ret, resample=self.resample_tg, fill=self.fill)
-                   # resample = False is by default nearest, appropriate for targets
-        return F.affine(img, *ret, resample=self.resample, fill=self.fill)
+            return F.affine(img, *ret, interpolation=self.resample, fill=img_fill), \
+                   F.affine(target, *ret, interpolation=self.resample_tg, fill=tgt_fill)
+                   # interpolation default for masks remains nearest
+        return F.affine(img, *ret, interpolation=self.resample, fill=img_fill)
 
     def __repr__(self):
         s = '{name}(degrees={degrees}'
@@ -1279,13 +1336,13 @@ class RandomAffine(object):
             s += ', scale={scale}'
         if self.shear is not None:
             s += ', shear={shear}'
-        if self.resample > 0:
+        if self.resample is not None:
             s += ', resample={resample}'
         if self.fill != 0:
             s += ', fill={fill}'
         s += ')'
         d = dict(self.__dict__)
-        d['resample'] = _pil_interpolation_to_str[d['resample']]
+        d['resample'] = _pil_interpolation_to_str.get(d['resample'], str(d['resample']))
         return s.format(name=self.__class__.__name__, **d)
 
 
