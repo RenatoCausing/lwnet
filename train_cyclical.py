@@ -292,9 +292,12 @@ if __name__ == '__main__':
         train_loader.dataset.im_list = tr_im_list
         train_loader.dataset.gt_list = tr_gt_list
         train_loader.dataset.mask_list = tr_mask_list
+
+    if checkpoint_folder is not None:
         print('* Loading weights from previous checkpoint={}'.format(checkpoint_folder))
         model, stats, optimizer_state_dict = load_model(model, checkpoint_folder, device=device, with_opt=True)
         optimizer.load_state_dict(optimizer_state_dict)
+        optimizer.zero_grad(set_to_none=True)
         for i, param_group in enumerate(optimizer.param_groups):
             param_group['lr'] = max_lr
             param_group['initial_lr'] = max_lr
