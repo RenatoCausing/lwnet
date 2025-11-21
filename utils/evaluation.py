@@ -42,7 +42,7 @@ def ewma(data, window=5):
     cumsums = mult.cumsum()
     out = offset + cumsums*scale_arr[::-1]
     return out
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, recall_score
 
 # def evaluate(logits, labels, n_classes, ignore_index = -100, fast=True):
 #     all_preds = []
@@ -107,10 +107,17 @@ def evaluate(logits, labels, n_classes, ignore_index = -100, fast=True):
 
     if n_classes == 4:
         all_preds_np = np.argmax(all_probs_np, axis=1)
-        return roc_auc_score(all_targets_np, all_probs_np, multi_class='ovo',average='weighted'), f1_score(all_targets_np, all_preds_np,average='weighted')
+        recall = recall_score(all_targets_np, all_preds_np, average='weighted', zero_division=0)
+        return (
+            roc_auc_score(all_targets_np, all_probs_np, multi_class='ovo', average='weighted'),
+            f1_score(all_targets_np, all_preds_np, average='weighted'),
+            recall,
+        )
     else:
         all_preds_np = all_probs_np > 0.5
         if fast==True:
-            return fast_auc(all_targets_np>0.5, all_probs_np), f1_score(all_targets_np>0.5, all_preds_np)
+            recall = recall_score(all_targets_np>0.5, all_preds_np, zero_division=0)
+            return fast_auc(all_targets_np>0.5, all_probs_np), f1_score(all_targets_np>0.5, all_preds_np), recall
         else:
-            return roc_auc_score(all_targets_np, all_probs_np), f1_score(all_targets_np, all_preds_np)
+            recall = recall_score(all_targets_np, all_preds_np, zero_division=0)
+            return roc_auc_score(all_targets_np, all_probs_np), f1_score(all_targets_np, all_preds_np), recall

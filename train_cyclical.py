@@ -55,8 +55,12 @@ def compare_op(metric):
         return operator.gt, 0
     elif metric == 'dice':
         return operator.gt, 0
+    elif metric == 'recall':
+        return operator.gt, 0
     elif metric == 'loss':
         return operator.lt, np.inf
+    elif metric == 'recall' or metric == 'sensitivity':
+        return operator.gt,
     else:
         raise NotImplementedError
 
@@ -161,15 +165,15 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, scheduler
 
         # classification metrics at the end of cycle
         print(25 * '-' + '  End of cycle, evaluating ' + 25 * '-')
-        tr_auc, tr_dice = evaluate(tr_logits, tr_labels, model.n_classes)  # for n_classes>1, will need to redo evaluate
+        tr_auc, tr_dice, tr_recall = evaluate(tr_logits, tr_labels, model.n_classes)  # for n_classes>1, will need to redo evaluate
         del tr_logits, tr_labels
         with torch.no_grad():
             assess=True
             vl_logits, vl_labels, vl_loss, _ = run_one_epoch(val_loader, model, criterion, assess=assess)
-            vl_auc, vl_dice = evaluate(vl_logits, vl_labels, model.n_classes)  # for n_classes>1, will need to redo evaluate
+            vl_auc, vl_dice, vl_recall = evaluate(vl_logits, vl_labels, model.n_classes)  # for n_classes>1, will need to redo evaluate
             del vl_logits, vl_labels
-        print('Train/Val Loss: {:.4f}/{:.4f}  -- Train/Val AUC: {:.4f}/{:.4f}  -- Train/Val DICE: {:.4f}/{:.4f} -- LR={:.6f}'.format(
-                tr_loss, vl_loss, tr_auc, vl_auc, tr_dice, vl_dice, get_lr(optimizer)).rstrip('0'))
+        print('Train/Val Loss: {:.4f}/{:.4f}  -- Train/Val AUC: {:.4f}/{:.4f}  -- Train/Val DICE: {:.4f}/{:.4f}  -- Train/Val Recall: {:.4f}/{:.4f} -- LR={:.6f}'.format(
+                tr_loss, vl_loss, tr_auc, vl_auc, tr_dice, vl_dice, tr_recall, vl_recall, get_lr(optimizer)).rstrip('0'))
 
         # check if performance was better than anyone before and checkpoint if so
         if metric == 'auc':
@@ -180,6 +184,8 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, scheduler
             monitoring_metric = vl_loss
         elif metric == 'dice':
             monitoring_metric = vl_dice
+        elif metric == 'recall':
+            monitoring_metric = vl_recall
         if is_better(monitoring_metric, best_monitoring_metric):
             print('Best {} attained. {:.2f} --> {:.2f}'.format(metric, 100*best_monitoring_metric, 100*monitoring_metric))
             best_auc, best_dice, best_cycle = vl_auc, vl_dice, cycle+1
